@@ -8,9 +8,7 @@ from typing import List, Dict, Optional
 from web3 import Web3
 from eth_account import Account
 from eth_account.messages import encode_defunct
-import schedule
 import pytz
-import sys
 
 class SomniaMultiAccountBot:
     def __init__(self):
@@ -18,6 +16,8 @@ class SomniaMultiAccountBot:
         self.accounts = []
         self.proxies = []
         self.use_proxy = False
+        self.next_claim_time = None
+        self.last_claim_time = None
 
         # Common headers
         self.headers = {
@@ -199,7 +199,6 @@ class SomniaMultiAccountBot:
             if isinstance(value, (int, float)):
                 return int(value)
             if isinstance(value, str):
-                # Remove commas and convert
                 return int(value.replace(',', ''))
             return default
         except:
@@ -207,7 +206,6 @@ class SomniaMultiAccountBot:
 
     def extract_points_from_data(self, user_data: dict) -> int:
         """Extract points dari berbagai kemungkinan field di API"""
-        # Coba berbagai field yang mungkin berisi points
         possible_fields = [
             'totalPoints',
             'points',
@@ -237,34 +235,25 @@ class SomniaMultiAccountBot:
             if response.status_code == 200:
                 user_data = response.json()
 
-                # Simpan raw data untuk debugging
                 account['raw_user_data'] = user_data
-
-                # Basic info
                 account['user_id'] = user_data.get('id')
                 account['referral_code'] = user_data.get('referralCode')
                 account['username'] = user_data.get('username')
                 account['is_bot'] = user_data.get('isBot')
 
-                # Social media connections
                 socials = user_data.get('socials', {})
                 if isinstance(socials, dict):
                     account['discord'] = socials.get('discord', {}).get('username')
                     account['twitter'] = socials.get('twitter', {}).get('username')
                     account['telegram'] = socials.get('telegram', {}).get('username')
 
-                # Extract points dengan berbagai cara
                 points = self.extract_points_from_data(user_data)
                 account['points'] = points
-
-                # Streak
                 account['streak'] = self.safe_int(user_data.get('streakCount', 0))
 
-                # Last claim info
                 if 'lastGmAt' in user_data and user_data['lastGmAt']:
                     account['last_claim'] = user_data['lastGmAt']
 
-                # Next login info
                 if 'nextLogin' in user_data and user_data['nextLogin']:
                     account['next_login'] = user_data['nextLogin']
 
@@ -288,22 +277,18 @@ class SomniaMultiAccountBot:
             return False
 
         try:
-            # Parse last claim time
             last_claim_str = account['last_claim']
             if isinstance(last_claim_str, str):
                 last_claim = datetime.fromisoformat(last_claim_str.replace('Z', '+00:00'))
             else:
                 return False
 
-            # Convert ke WIB (UTC+7)
             wib = pytz.timezone('Asia/Jakarta')
             now_wib = datetime.now(wib)
             last_claim_wib = last_claim.astimezone(wib)
 
-            # Simpan tanggal claim untuk display
             account['last_claim_date'] = last_claim_wib.strftime('%d/%m/%Y %H:%M WIB')
 
-            # Cek apakah sudah claim hari ini (setelah jam 00:00 WIB)
             if last_claim_wib.date() == now_wib.date():
                 return True
 
@@ -319,7 +304,6 @@ class SomniaMultiAccountBot:
         if not account.get('token'):
             return {'success': False, 'message': 'No token'}
 
-        # Simpan points sebelumnya dengan safe conversion
         old_points = self.safe_int(account.get('points', 0))
 
         try:
@@ -328,10 +312,8 @@ class SomniaMultiAccountBot:
             if response.status_code == 200:
                 result = response.json()
 
-                # Safely convert all numeric values
                 new_points = self.safe_int(result.get('finalPoints', 0))
 
-                # Jika finalPoints tidak ada, coba extract dari data lain
                 if new_points == 0:
                     new_points = self.extract_points_from_data(result)
 
@@ -380,11 +362,9 @@ class SomniaMultiAccountBot:
         print(f"✅ SUDAH CLAIM HARI INI")
         print(f"{'='*70}")
 
-        # Basic Info
         print(f"🆔 Wallet Address : {account['wallet_address']}")
         print(f"👤 Username       : {account.get('username') or '-'}")
 
-        # Social Media
         if account.get('discord'):
             print(f"💬 Discord        : {account['discord']}")
         if account.get('twitter'):
@@ -392,12 +372,10 @@ class SomniaMultiAccountBot:
         if account.get('telegram'):
             print(f"✈️  Telegram       : {account['telegram']}")
 
-        # Stats
         print(f"💰 Total Points   : {account.get('points', 0):,}")
         print(f"🔥 Streak         : {account.get('streak', 0)}")
         print(f"🎫 Referral Code  : {account.get('referral_code') or '-'}")
 
-        # Last Claim Info
         if account.get('last_claim_date'):
             print(f"⏰ Last Claim     : {account['last_claim_date']}")
 
@@ -408,7 +386,6 @@ class SomniaMultiAccountBot:
         if delay > 0:
             time.sleep(delay)
 
-        # Shortened info
         name = self.shorten_text(account['name'], 8)
         wallet = self.shorten_text(account['wallet_address'], 12)
 
@@ -417,7 +394,6 @@ class SomniaMultiAccountBot:
             print(f"│ 🔹 {name:<8} │ 📧 {wallet:<42}     │")
             print(f"├{'─'*68}┤")
 
-        # Step 1: Login
         print(f"│ ⏳ Logging in...{' '*52}│", end='\r')
         if not self.onboard_account(account, silent=True):
             print(f"│ ❌ Login gagal{' '*54}│")
@@ -427,7 +403,6 @@ class SomniaMultiAccountBot:
 
         time.sleep(1)
 
-        # Step 2: Get user info
         print(f"│ ⏳ Getting info...{' '*50}│", end='\r')
         if not self.get_user_info(account, silent=True):
             print(f"│ ❌ Get info gagal{' '*51}│")
@@ -435,7 +410,6 @@ class SomniaMultiAccountBot:
             account['status'] = 'failed'
             return
 
-        # Display user info
         username = account.get('username') or '-'
         discord = account.get('discord') or '-'
         points = self.safe_int(account.get('points', 0))
@@ -446,18 +420,13 @@ class SomniaMultiAccountBot:
 
         time.sleep(1)
 
-        # Step 3: Check if already claimed
         if self.check_already_claimed_today(account):
             print(f"│ ✅ SUDAH CLAIM HARI INI{' '*45}│")
             print(f"└{'─'*68}┘")
-
-            # Tampilkan info lengkap
             self.display_already_claimed_account(account)
-
             account['status'] = 'already_claimed'
             return
 
-        # Step 4: Claim
         print(f"│ ⏳ Claiming...{' '*54}│", end='\r')
         result = self.claim_daily_gm(account, silent=True)
 
@@ -518,7 +487,6 @@ class SomniaMultiAccountBot:
         print(f"💰 Total Points    : {total_points:,}")
         print(f"{'═'*70}")
 
-        # Detail per account (Compact view)
         print(f"\n{'No':<4} {'Account':<10} {'Username':<15} {'Discord':<15} {'Points':<12} {'Streak':<8} {'Status'}")
         print(f"{'-'*90}")
         for idx, acc in enumerate(self.accounts, 1):
@@ -546,93 +514,71 @@ class SomniaMultiAccountBot:
             if 'private_key' in account:
                 account['private_key'] = "CLEARED"
 
-    def scheduled_claim(self):
-        """Fungsi untuk scheduled claim"""
-        print(f"\n{'='*70}")
-        print(f"⏰ SCHEDULED CLAIM TRIGGERED")
+    def format_countdown(self, seconds: int) -> str:
+        """Format seconds ke HH:MM:SS"""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def run_with_countdown(self):
+        """Run bot dengan countdown 24 jam + 1 menit"""
         wib = pytz.timezone('Asia/Jakarta')
-        print(f"🕐 {datetime.now(wib).strftime('%d/%m/%Y %H:%M:%S WIB')}")
-        print(f"{'='*70}\n")
-
-        self.run_all_accounts(delay_between=3)
-
-    def get_next_run_time(self):
-        """Menghitung waktu run berikutnya (07:00 WIB pagi)"""
-        wib = pytz.timezone('Asia/Jakarta')
-        now_wib = datetime.now(wib)
-        
-        # Set target waktu ke 07:00 pagi WIB
-        next_run = now_wib.replace(hour=7, minute=0, second=0, microsecond=0)
-        
-        # Jika sudah lewat jam 7 pagi, set ke besok jam 7 pagi
-        if next_run <= now_wib:
-            next_run += timedelta(days=1)
-        
-        return next_run
-
-    def format_countdown(self, time_diff):
-        """Format countdown dengan jam, menit, detik"""
-        total_seconds = int(time_diff.total_seconds())
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        seconds = total_seconds % 60
-        
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    def run_scheduler(self):
-        """Run bot dengan scheduler otomatis jam 07:00 WIB setiap hari"""
-        wib = pytz.timezone('Asia/Jakarta')
-
-        # Schedule untuk jam 07:00 WIB (PAGI, bukan malam!)
-        schedule.every().day.at("07:00").do(self.scheduled_claim)
 
         print(f"\n{'═'*70}")
-        print(f"🤖 SOMNIA AUTO CLAIM BOT - SCHEDULER MODE")
+        print(f"🤖 SOMNIA AUTO CLAIM BOT - COUNTDOWN MODE")
         print(f"{'═'*70}")
-        print(f"⏰ Schedule: Setiap hari jam 07:00 WIB (PAGI)")
+        print(f"⏰ Interval: 24 jam 1 menit setelah claim")
         print(f"👥 Total Accounts: {len(self.accounts)}")
         print(f"🌐 Proxy: {'Enabled' if self.use_proxy else 'Disabled'}")
         print(f"{'═'*70}\n")
 
-        # Run sekali saat start jika user mau
-        run_now = input("🚀 Run claim sekarang juga? (y/n): ").strip().lower()
-        if run_now == 'y':
-            self.scheduled_claim()
-
-        print(f"\n⏳ Waiting for scheduled time (07:00 WIB PAGI)...")
-        print(f"💡 Press Ctrl+C to stop\n")
-
-        # Loop untuk menampilkan countdown setiap detik
+        run_now = input("🚀 Run claim sekarang? (y/n): ").strip().lower()
+        
+        cycle = 1
+        
         while True:
             try:
-                # Check apakah ada schedule yang harus dijalankan
-                schedule.run_pending()
-
-                # Hitung waktu tunggu sampai 07:00 pagi berikutnya
-                now_wib = datetime.now(wib)
-                next_run = self.get_next_run_time()
-                time_diff = next_run - now_wib
-
-                # Format countdown
-                countdown = self.format_countdown(time_diff)
-                current_time = now_wib.strftime('%H:%M:%S WIB')
-                next_run_date = next_run.strftime('%d/%m/%Y')
-
-                # Tampilkan countdown dengan format yang jelas
-                # Gunakan \r untuk overwrite baris yang sama dan sys.stdout.flush() untuk memastikan update langsung
-                print(f"⏰ Next Run: {next_run_date} 07:00 WIB | Countdown: {countdown} | Now: {current_time}     ", end='\r')
-                sys.stdout.flush()
-
-                # Tunggu 1 detik sebelum update berikutnya
-                time.sleep(1)
-
+                if run_now == 'y' or self.next_claim_time is None or datetime.now(wib) >= self.next_claim_time:
+                    # Waktu untuk claim
+                    print(f"\n{'='*70}")
+                    print(f"🔄 CYCLE #{cycle}")
+                    print(f"{'='*70}")
+                    
+                    self.last_claim_time = datetime.now(wib)
+                    self.run_all_accounts(delay_between=3)
+                    
+                    # Set next claim time: 24 jam 1 menit dari sekarang
+                    self.next_claim_time = self.last_claim_time + timedelta(hours=24, minutes=1)
+                    
+                    print(f"\n{'═'*70}")
+                    print(f"✅ Cycle #{cycle} selesai!")
+                    print(f"⏰ Last Claim : {self.last_claim_time.strftime('%d/%m/%Y %H:%M:%S WIB')}")
+                    print(f"⏰ Next Claim : {self.next_claim_time.strftime('%d/%m/%Y %H:%M:%S WIB')}")
+                    print(f"{'═'*70}\n")
+                    
+                    cycle += 1
+                    run_now = 'n'
+                
+                # Countdown loop
+                while datetime.now(wib) < self.next_claim_time:
+                    now = datetime.now(wib)
+                    time_diff = (self.next_claim_time - now).total_seconds()
+                    
+                    if time_diff <= 0:
+                        break
+                    
+                    countdown = self.format_countdown(int(time_diff))
+                    current_time = now.strftime('%H:%M:%S WIB')
+                    next_time = self.next_claim_time.strftime('%d/%m %H:%M:%S')
+                    
+                    print(f"⏳ Countdown: {countdown} | Current: {current_time} | Next Claim: {next_time}", end='\r')
+                    time.sleep(1)
+                
             except KeyboardInterrupt:
                 print(f"\n\n🛑 Bot stopped by user")
                 self.clear_private_keys()
                 break
-            except Exception as e:
-                print(f"\n❌ Error in scheduler: {e}")
-                time.sleep(1)
 
 def create_pk_txt_template():
     """Membuat template file pk.txt"""
@@ -675,7 +621,7 @@ def main():
     print("🤖 SOMNIA MULTI-ACCOUNT AUTO CLAIM BOT")
     print("="*70)
     print("1. Run sekali (Manual)")
-    print("2. Run dengan scheduler (Auto jam 07:00 WIB PAGI)")
+    print("2. Run dengan countdown (Auto 24 jam 1 menit)")
     print("3. Buat template pk.txt")
     print("4. Buat template proxy.txt")
     print("="*70)
@@ -690,7 +636,6 @@ def main():
         create_proxy_txt_template()
         return
 
-    # Load private keys
     print("\n📂 Loading private keys from pk.txt...")
     count = bot.load_private_keys_from_txt("pk.txt")
     if count == 0:
@@ -700,7 +645,6 @@ def main():
 
     print(f"✅ Loaded {count} accounts")
 
-    # Load proxies (optional)
     print("\n📂 Loading proxies from proxy.txt...")
     proxy_count = bot.load_proxies_from_txt("proxy.txt")
     if proxy_count > 0:
@@ -712,12 +656,10 @@ def main():
         bot.use_proxy = False
 
     if choice == "1":
-        # Manual run
         bot.run_all_accounts(delay_between=3)
         bot.clear_private_keys()
     elif choice == "2":
-        # Scheduler mode
-        bot.run_scheduler()
+        bot.run_with_countdown()
     else:
         print("❌ Pilihan tidak valid")
         return
@@ -729,11 +671,10 @@ if __name__ == "__main__":
         from web3 import Web3
         from eth_account import Account
         from eth_account.messages import encode_defunct
-        import schedule
         import pytz
     except ImportError:
         print("❌ Library yang diperlukan belum terinstall")
-        print("📦 Install dengan: pip install web3 eth-account requests schedule pytz")
+        print("📦 Install dengan: pip install web3 eth-account requests pytz")
         exit(1)
 
     main()
